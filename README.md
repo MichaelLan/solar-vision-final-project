@@ -27,12 +27,7 @@ El navegador acepta PNG, JPEG o WebP de **24 píxeles de ancho por 40 de alto**,
 - Conexión a los registros de paquetes y Cloudflare para instalar y desplegar.
 - ZIP original `2020-02-14_InfraredSolarModules.zip` de [Raptor Maps](https://github.com/RaptorMaps/InfraredSolarModules). La copia local está en `dataset/` y no se versiona.
 
-`backend/uv.lock` y `backend/pylock.toml` están generados. Crear y confirmar los dos lockfiles restantes antes del primer push a `main`; el workflow falla si faltan:
-
-```bash
-cd ml && UV_PYTHON=3.12 uv lock
-cd ../frontend && pnpm install --lockfile-only
-```
+Los lockfiles de `backend/`, `ml/` y `frontend/` están versionados. El lockfile de pnpm 12 contiene dos documentos YAML por diseño; no deben separarse.
 
 ## Preparar, entrenar y evaluar
 
@@ -65,9 +60,11 @@ En otra terminal:
 
 ```bash
 cd frontend
-pnpm install
+pnpm install --frozen-lockfile --ignore-scripts
 pnpm dev
 ```
+
+`--ignore-scripts` evita los scripts de instalación de las dependencias. `pnpm dev`, `pnpm typecheck`, `pnpm test` y `pnpm build` sí ejecutan código JavaScript; ejecútelos únicamente en un entorno autorizado, como el CI aislado. El build puede requerir que `esbuild` complete su instalación; en esta sesión no se aprobaron ni ejecutaron sus scripts.
 
 Vite usa `/api` hacia `localhost:8000`. Compruebe `http://127.0.0.1:8000/api/health` y `/api/model/info` antes de enviar imágenes. La API recibe JSON como `{"pixels":[960 valores],"width":24,"height":40}`; no recibe el archivo original. `POST /api/predict` devuelve clase, confianza y probabilidades reales. Se pueden seleccionar hasta 20 imágenes por lote en la interfaz.
 
@@ -102,7 +99,7 @@ uv run --no-sync pywrangler deploy --dry-run
 uv run --no-sync pywrangler dev
 ```
 
-El dry run local empaquetó 9,666 MiB con pywrangler 1.17.9; esto comprueba el bundle, no la ejecución en Workers. En esta sesión `pywrangler dev` se detuvo al consultar `uv_interface_addresses` por restricciones del sandbox. En un entorno sin esa restricción, pruebe `/api/health`, `/api/model/info`, una predicción de una imagen real y un lote desde el navegador local de Workers. La publicación se prepara mediante [GitHub Actions](docs/ci-cloudflare.md): el workflow verifica ML, backend, frontend e informe y, en `main`, despliega y comprueba la URL pública. Todavía faltan los lockfiles de ML y frontend, el repositorio remoto, los secretos de Cloudflare y la ejecución exitosa del workflow; **no hay URL pública verificada**. La viabilidad de FastAPI y Static Assets se apoya en [documentación oficial de Cloudflare](https://developers.cloudflare.com/workers/languages/python/packages/fastapi/). No guarde tokens ni credenciales en Git.
+El dry run local empaquetó 9,666 MiB con pywrangler 1.17.9; esto comprueba el bundle, no la ejecución en Workers. En esta sesión `pywrangler dev` se detuvo al consultar `uv_interface_addresses` por restricciones del sandbox. En un entorno sin esa restricción, pruebe `/api/health`, `/api/model/info`, una predicción de una imagen real y un lote desde el navegador local de Workers. La publicación se prepara mediante [GitHub Actions](docs/ci-cloudflare.md): el workflow verifica ML, backend, frontend e informe y, en `main`, despliega y comprueba la URL pública. No se conoce el estado de los secretos de Cloudflare en GitHub ni se ha verificado la ejecución exitosa del workflow; **no hay URL pública verificada**. La viabilidad de FastAPI y Static Assets se apoya en [documentación oficial de Cloudflare](https://developers.cloudflare.com/workers/languages/python/packages/fastapi/). No guarde tokens ni credenciales en Git.
 
 ## Límites
 

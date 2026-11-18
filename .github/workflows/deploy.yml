@@ -15,12 +15,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-and-deploy:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9
@@ -69,14 +71,14 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: |
-          test -f pnpm-lock.yaml || { echo 'Missing frontend/pnpm-lock.yaml; run pnpm install and commit the lockfile'; exit 1; }
-          pnpm install --frozen-lockfile
+          test -f pnpm-lock.yaml || { echo 'Missing frontend/pnpm-lock.yaml'; exit 1; }
+          pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Test and build frontend
         working-directory: frontend
         run: |
-          pnpm test
-          pnpm run build
+          pnpm run --ignore-scripts test
+          pnpm run --ignore-scripts build
           test -s dist/index.html
           test -n "$(find dist/assets -maxdepth 1 -name '*.js' -print -quit)"
 
@@ -88,6 +90,49 @@ jobs:
           python3 report/build_report.py
           git diff --exit-code -- report/results.typ
           typst compile --root . report/main.typ report/informe.pdf
+
+      - name: Store verified frontend build
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+
+      - name: Install Python for Pywrangler
+        run: uv python install 3.14
+
+      - name: Install Node.js for Pywrangler
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Download verified frontend build
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Check frontend assets and install backend
+        run: |
+          test -s frontend/dist/index.html
+          test -n "$(find frontend/dist/assets -maxdepth 1 -name '*.js' -print -quit)"
+          cd backend
+          uv sync --python 3.14 --locked --dev
 
       - name: Check Cloudflare credentials
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
