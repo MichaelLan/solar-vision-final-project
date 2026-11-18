@@ -1,0 +1,36 @@
+{
+  "source": "https://github.com/RaptorMaps/InfraredSolarModules",
+  "archive_name": "2020-02-14_InfraredSolarModules.zip",
+  "archive_sha256": "b82c706bc719b045ac4f8930570d81767a8a170d0998ca3e09283b585db05b5e",
+  "metadata_count": 20000,
+  "original_counts": {
+    "Cell": 1877,
+    "Cell-Multi": 1288,
+    "Cracking": 940,
+    "Diode": 1499,
+    "Diode-Multi": 175,
+    "Hot-Spot": 249,
+    "Hot-Spot-Multi": 246,
+    "No-Anomaly": 10000,
+    "Offline-Module": 827,
+    "Shadowing": 1056,
+    "Soiling": 204,
+    "Vegetation": 1639
+  },
+  "selected_class_counts": {
+    "No-Anomaly": 10000,
+    "Cell": 1877,
+    "Diode": 1499,
+    "Cell-Multi": 1288
+  },
+  "validated_dimensions": {
+    "24x40": 14664
+  },
+  "observed_formats": {
+    "JPEG": 14664
+  },
+  "observed_modes": {
+    "L": 14664
+  },
+  "selected_image_count": 14664
+}

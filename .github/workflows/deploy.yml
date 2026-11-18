@@ -1,0 +1,152 @@
+name: Verify and deploy Solar Vision
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: solar-vision-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      - name: Install Python versions
+        run: uv python install 3.12 3.14
+
+      - name: Test ML pipeline
+        working-directory: ml
+        env:
+          PYTHONPATH: src
+        run: |
+          test -f uv.lock || { echo 'Missing ml/uv.lock; run uv lock and commit the lockfile'; exit 1; }
+          uv sync --python 3.12 --locked --dev
+          uv run --no-sync pytest -q
+          uv run --no-sync ruff check src tests
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --python 3.14 --locked --dev
+
+      - name: Package trained model
+        working-directory: backend
+        run: |
+          uv run --no-sync python scripts/package_model.py
+          git diff --exit-code -- src/infra/model_payload.py
+
+      - name: Test backend
+        working-directory: backend
+        run: |
+          uv run --no-sync pytest -q tests
+          uv run --no-sync ruff check src tests
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 12.21.0
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          test -f pnpm-lock.yaml || { echo 'Missing frontend/pnpm-lock.yaml; run pnpm install and commit the lockfile'; exit 1; }
+          pnpm install --frozen-lockfile
+
+      - name: Test and build frontend
+        working-directory: frontend
+        run: |
+          pnpm test
+          pnpm run build
+          test -s dist/index.html
+          test -n "$(find dist/assets -maxdepth 1 -name '*.js' -print -quit)"
+
+      - name: Install Typst
+        uses: typst-community/setup-typst@v5
+
+      - name: Compile academic report
+        run: |
+          python3 report/build_report.py
+          git diff --exit-code -- report/results.typ
+          typst compile --root . report/main.typ report/informe.pdf
+
+      - name: Check Cloudflare credentials
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_WORKER_URL: ${{ vars.CLOUDFLARE_WORKER_URL }}
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo 'Missing CLOUDFLARE_ACCOUNT_ID secret'; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Missing CLOUDFLARE_API_TOKEN secret'; exit 1; }
+          test -n "$CLOUDFLARE_WORKER_URL" || { echo 'Missing CLOUDFLARE_WORKER_URL repository variable'; exit 1; }
+
+      - name: Deploy Worker and static assets
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        working-directory: backend
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: uv run --no-sync pywrangler deploy
+
+      - name: Verify public application
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          CLOUDFLARE_WORKER_URL: ${{ vars.CLOUDFLARE_WORKER_URL }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import math
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          base = os.environ["CLOUDFLARE_WORKER_URL"].rstrip("/")
+          fixture = json.loads(Path("backend/tests/fixtures/real_image_tensor.json").read_text())
+
+          def get(path):
+              with urllib.request.urlopen(f"{base}{path}", timeout=30) as response:
+                  return response.status, response.headers.get_content_type(), response.read()
+
+          status, _, body = get("/api/health")
+          assert status == 200 and json.loads(body)["model_ready"]
+          status, _, body = get("/api/model/info")
+          info = json.loads(body)
+          assert status == 200 and info["input"]["width"] == 24
+          assert info["input"]["height"] == 40
+
+          payload = {key: fixture[key] for key in ("pixels", "width", "height")}
+          request = urllib.request.Request(
+              f"{base}/api/predict",
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              result = json.load(response)
+              assert response.status == 200
+          for label, expected in fixture["expected_probabilities"].items():
+              assert math.isclose(result["probabilities"][label], expected, abs_tol=1e-6)
+          status, content_type, _ = get("/")
+          assert status == 200 and content_type == "text/html"
+          print(f"Verified model and static assets at {base}")
+          PY

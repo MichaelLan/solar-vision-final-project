@@ -1,0 +1,3 @@
+.venv-workers/
+node_modules/
+python_modules/

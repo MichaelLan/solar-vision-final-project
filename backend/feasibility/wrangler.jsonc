@@ -1,0 +1,6 @@
+{
+  "name": "solar-worker-feasibility",
+  "main": "src/main.py",
+  "compatibility_date": "2026-11-16",
+  "compatibility_flags": ["python_workers"]
+}

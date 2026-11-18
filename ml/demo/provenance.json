@@ -1,0 +1,48 @@
+{
+  "source": "https://github.com/RaptorMaps/InfraredSolarModules",
+  "license": "MIT (source repository)",
+  "archive_sha256": "b82c706bc719b045ac4f8930570d81767a8a170d0998ca3e09283b585db05b5e",
+  "split": "test",
+  "images": [
+    {
+      "file": "No-Anomaly_10231.jpg",
+      "image_id": "10231",
+      "class": "No-Anomaly"
+    },
+    {
+      "file": "No-Anomaly_10335.jpg",
+      "image_id": "10335",
+      "class": "No-Anomaly"
+    },
+    {
+      "file": "Cell_4868.jpg",
+      "image_id": "4868",
+      "class": "Cell"
+    },
+    {
+      "file": "Cell_4922.jpg",
+      "image_id": "4922",
+      "class": "Cell"
+    },
+    {
+      "file": "Cell-Multi_3557.jpg",
+      "image_id": "3557",
+      "class": "Cell-Multi"
+    },
+    {
+      "file": "Cell-Multi_3657.jpg",
+      "image_id": "3657",
+      "class": "Cell-Multi"
+    },
+    {
+      "file": "Diode_1012.jpg",
+      "image_id": "1012",
+      "class": "Diode"
+    },
+    {
+      "file": "Diode_1044.jpg",
+      "image_id": "1044",
+      "class": "Diode"
+    }
+  ]
+}

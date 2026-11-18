@@ -1,0 +1,19 @@
+[project]
+name = "solar-vision-ml"
+version = "0.1.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "numpy>=1.26,<3",
+  "pillow>=10,<13",
+  "scikit-learn>=1.4,<2",
+  "matplotlib>=3.8,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
