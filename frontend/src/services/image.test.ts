@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { IMAGE_HEIGHT, IMAGE_WIDTH, PIXEL_COUNT, rgbaToPixels, validateImage } from './image'
+import { dimensionError, IMAGE_HEIGHT, IMAGE_WIDTH, PIXEL_COUNT, rgbaToPixels, validateImage } from './image'
 
 describe('image input', () => {
   it('uses the actual dataset image orientation', () => {
@@ -8,6 +8,11 @@ describe('image input', () => {
   it('rejects unsupported and empty files', () => {
     expect(validateImage(new File(['x'], 'x.txt', { type: 'text/plain' }))).toMatch(/PNG/)
     expect(validateImage(new File([], 'x.png', { type: 'image/png' }))).toMatch(/vacía/)
+  })
+
+  it('explains wrong pixel dimensions in Spanish', () => {
+    expect(dimensionError(24, 40)).toBeNull()
+    expect(dimensionError(40, 24)).toMatch(/mide 40 × 24 px y debe medir 24 × 40 px/)
   })
 
   it('converts RGB to grayscale in row-major order', () => {

@@ -5,43 +5,43 @@
   "split": "test",
   "images": [
     {
-      "file": "No-Anomaly_10231.jpg",
-      "image_id": "10231",
+      "file": "No-Anomaly_10015.jpg",
+      "image_id": "10015",
       "class": "No-Anomaly"
     },
     {
-      "file": "No-Anomaly_10335.jpg",
-      "image_id": "10335",
+      "file": "No-Anomaly_10040.jpg",
+      "image_id": "10040",
       "class": "No-Anomaly"
     },
     {
-      "file": "Cell_4868.jpg",
-      "image_id": "4868",
+      "file": "Cell_4901.jpg",
+      "image_id": "4901",
       "class": "Cell"
     },
     {
-      "file": "Cell_4922.jpg",
-      "image_id": "4922",
+      "file": "Cell_4905.jpg",
+      "image_id": "4905",
       "class": "Cell"
     },
     {
-      "file": "Cell-Multi_3557.jpg",
-      "image_id": "3557",
+      "file": "Cell-Multi_3578.jpg",
+      "image_id": "3578",
       "class": "Cell-Multi"
     },
     {
-      "file": "Cell-Multi_3657.jpg",
-      "image_id": "3657",
+      "file": "Cell-Multi_3585.jpg",
+      "image_id": "3585",
       "class": "Cell-Multi"
     },
     {
-      "file": "Diode_1012.jpg",
-      "image_id": "1012",
+      "file": "Diode_1027.jpg",
+      "image_id": "1027",
       "class": "Diode"
     },
     {
-      "file": "Diode_1044.jpg",
-      "image_id": "1044",
+      "file": "Diode_1030.jpg",
+      "image_id": "1030",
       "class": "Diode"
     }
   ]

@@ -20,11 +20,13 @@ class ClassifierTests(unittest.TestCase):
                 "channels": 1,
                 "normalization": "rounded_bt601_luma_255",
             },
-            "layers": [{
-                "weights": [[value] * 960 for value in [0.0, 0.5, -0.5, 0.1]],
-                "bias": [0.0, 0.0, 0.0, 0.0],
-                "activation": "softmax",
-            }],
+            "layers": [
+                {
+                    "weights": [[value] * 960 for value in [0.0, 0.5, -0.5, 0.1]],
+                    "bias": [0.0, 0.0, 0.0, 0.0],
+                    "activation": "softmax",
+                }
+            ],
         }
 
     def test_prediction_probabilities(self):

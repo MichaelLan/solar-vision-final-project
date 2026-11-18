@@ -4,11 +4,39 @@ import ImageUpload from '../components/ImageUpload.vue'
 import PredictionPanel from '../components/PredictionPanel.vue'
 import { useClassifier } from '../composables/useClassifier'
 import { getModelInfo } from '../services/api'
-import { CLASS_DETAILS, CLASS_ORDER } from '../types/model'
+import { CLASS_DETAILS, CLASS_ORDER, type ImageResult } from '../types/model'
 
-const { items, activeId, activeItem, busy, notice, completed, counts, addFiles, classifyAll, clear } = useClassifier()
+const { items, activeId, activeItem, busy, notice, ready, invalid, checking, completed, counts, addFiles, classifyAll, clear } = useClassifier()
 const modelStatus = ref<'checking' | 'online' | 'offline'>('checking')
-const pending = computed(() => items.value.filter((item) => item.status === 'ready').length)
+const pending = computed(() => ready.value.length)
+
+const STATUS_LABELS: Record<ImageResult['status'], string> = {
+  checking: 'comprobando',
+  ready: 'pendiente',
+  processing: 'procesando',
+  done: 'clasificada',
+  error: 'error',
+}
+
+function statusLabel(item: ImageResult): string {
+  return item.rejected ? 'no válida' : STATUS_LABELS[item.status]
+}
+
+function plural(count: number, singular: string, pluralForm: string): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`
+}
+
+const analyzeLabel = computed(() => {
+  if (busy.value) return 'Analizando…'
+  if (checking.value) return 'Comprobando imágenes…'
+  if (pending.value) return `Clasificar ${plural(pending.value, 'imagen', 'imágenes')}`
+  return completed.value.length ? 'Lote analizado' : 'Sin imágenes válidas'
+})
+
+function goToWorkspace() {
+  document.getElementById('workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  document.getElementById('image-input')?.focus({ preventScroll: true })
+}
 
 onMounted(async () => {
   try {
@@ -42,6 +70,7 @@ onMounted(async () => {
           <span class="eyebrow hero-eyebrow"><span class="eyebrow-line" /> INSPECCIÓN FOTOVOLTAICA · TERMOGRAFÍA</span>
           <h1>Una lectura más clara de tus <em>imágenes térmicas.</em></h1>
           <p>Clasifica patrones en módulos fotovoltaicos con un modelo de visión por computadora. Sube una imagen o analiza un lote completo en segundos.</p>
+          <a class="button button-primary hero-cta" href="#workspace" @click.prevent="goToWorkspace">Analizar imágenes <span aria-hidden="true">↓</span></a>
           <div class="hero-meta"><span>04 categorías</span><span class="meta-divider" /><span>Imágenes de 24 × 40 px</span><span class="meta-divider" /><span>Resultados por imagen</span></div>
         </div>
         <div class="hero-art" aria-hidden="true">
@@ -50,11 +79,11 @@ onMounted(async () => {
           </div>
           <div class="art-scanline" />
           <div class="art-label art-label-top"><span class="art-pulse" /> ANÁLISIS TÉRMICO</div>
-          <div class="art-label art-label-bottom">24 × 40 <span>PIXELS</span></div>
+          <div class="art-label art-label-bottom">24 × 40 <span>PÍXELES</span></div>
         </div>
       </section>
 
-      <section class="workspace" aria-labelledby="workspace-title">
+      <section id="workspace" class="workspace" aria-labelledby="workspace-title">
         <div class="section-heading">
           <div>
             <span class="eyebrow">01 / CLASIFICADOR</span>
@@ -75,11 +104,14 @@ onMounted(async () => {
             </div>
             <div v-if="activeItem" class="preview-caption"><span class="filename" :title="activeItem.file.name">{{ activeItem.file.name }}</span><span>{{ (activeItem.file.size / 1024).toFixed(1) }} KB</span></div>
             <div class="analysis-actions">
-              <button class="button button-primary analyze-button" type="button" :disabled="busy || !pending" @click="classifyAll">
-                <span v-if="busy" class="spinner spinner-light" aria-hidden="true" />
-                {{ busy ? 'Analizando…' : pending ? `Clasificar ${pending} ${pending === 1 ? 'imagen' : 'imágenes'}` : 'Lote analizado' }}
-                <span v-if="!busy" aria-hidden="true">↗</span>
+              <button class="button button-primary analyze-button" type="button" :disabled="busy || checking || !pending" @click="classifyAll">
+                <span v-if="busy || checking" class="spinner spinner-light" aria-hidden="true" />
+                {{ analyzeLabel }}
+                <span v-if="!busy && !checking" aria-hidden="true">↗</span>
               </button>
+              <p v-if="invalid.length" class="invalid-note" role="status">
+                {{ plural(invalid.length, 'imagen no válida', 'imágenes no válidas') }}: no se {{ invalid.length === 1 ? 'enviará' : 'enviarán' }} al modelo. Selecciónala{{ invalid.length === 1 ? '' : 's' }} para ver el motivo.
+              </p>
             </div>
             <div v-if="items.length > 1" class="file-list">
               <button
@@ -88,12 +120,14 @@ onMounted(async () => {
                 class="file-row"
                 :class="{ selected: item.id === activeId }"
                 type="button"
+                :aria-current="item.id === activeId ? 'true' : undefined"
                 @click="activeId = item.id"
               >
                 <span class="file-index">{{ String(index + 1).padStart(2, '0') }}</span>
                 <span class="file-name" :title="item.file.name">{{ item.file.name }}</span>
                 <span class="file-status" :class="item.status">
-                  {{ item.status === 'done' ? '✓' : item.status === 'error' ? '!' : item.status === 'processing' ? '…' : '○' }}
+                  <span aria-hidden="true">{{ item.status === 'done' ? '✓' : item.status === 'error' ? '!' : item.status === 'processing' || item.status === 'checking' ? '…' : '○' }}</span>
+                  <span class="visually-hidden">Estado: {{ statusLabel(item) }}</span>
                 </span>
               </button>
             </div>
@@ -102,7 +136,7 @@ onMounted(async () => {
         </div>
 
         <section v-if="items.length > 1 && completed.length" class="summary-card" aria-labelledby="summary-title">
-          <div class="summary-heading"><div><span class="eyebrow">RESUMEN DEL LOTE</span><h3 id="summary-title">{{ completed.length }} imágenes clasificadas</h3></div><span>Distribución de resultados</span></div>
+          <div class="summary-heading"><div><span class="eyebrow">RESUMEN DEL LOTE</span><h3 id="summary-title">{{ plural(completed.length, 'imagen clasificada', 'imágenes clasificadas') }}</h3></div><span>Distribución de resultados</span></div>
           <div class="summary-grid">
             <div v-for="name in CLASS_ORDER" :key="name" class="summary-item">
               <span class="summary-dot" :style="{ backgroundColor: CLASS_DETAILS[name].color }" />

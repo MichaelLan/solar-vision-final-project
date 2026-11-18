@@ -23,11 +23,13 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 "channels": 1,
                 "normalization": "rounded_bt601_luma_255",
             },
-            "layers": [{
-                "weights": [[value] * 960 for value in [0.0, 0.5, -0.5, 0.1]],
-                "bias": [0.0, 0.0, 0.0, 0.0],
-                "activation": "softmax",
-            }],
+            "layers": [
+                {
+                    "weights": [[value] * 960 for value in [0.0, 0.5, -0.5, 0.1]],
+                    "bias": [0.0, 0.0, 0.0, 0.0],
+                    "activation": "softmax",
+                }
+            ],
         }
         container.get_classifier.cache_clear()
 
@@ -67,7 +69,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
         await self.app(scope, receive, send)
         status = next(item["status"] for item in messages if item["type"] == "http.response.start")
-        content = b"".join(item.get("body", b"") for item in messages if item["type"] == "http.response.body")
+        content = b"".join(
+            item.get("body", b"") for item in messages if item["type"] == "http.response.body"
+        )
         return status, json.loads(content)
 
     async def test_health_and_model_info(self):
@@ -77,6 +81,26 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         status, body = await self.request("GET", "/api/model/info")
         self.assertEqual(status, 200)
         self.assertEqual(body["input"]["width"], 24)
+        self.assertEqual(body["architecture"], "dense")
+        self.assertIsNone(body["sha256"])
+        self.assertEqual(body["input"]["server_normalization"], {"type": "none"})
+
+    async def test_invalid_model_returns_503(self):
+        valid = self.container.MODEL
+        self.container.MODEL = {**valid, "architecture": "cnn"}
+        self.container.get_classifier.cache_clear()
+        try:
+            payload = {"pixels": [0.5] * 960, "width": 24, "height": 40}
+            status, body = await self.request("POST", "/api/predict", payload)
+            self.assertEqual(status, 503)
+            self.assertIn("Invalid model artifact", body["detail"])
+            status, _ = await self.request("GET", "/api/model/info")
+            self.assertEqual(status, 503)
+            status, body = await self.request("GET", "/api/health")
+            self.assertEqual((status, body["model_ready"]), (200, False))
+        finally:
+            self.container.MODEL = valid
+            self.container.get_classifier.cache_clear()
 
     async def test_real_inference_path_and_validation(self):
         payload = {"pixels": [1] * 960, "width": 24, "height": 40}

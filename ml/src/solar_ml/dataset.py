@@ -1,6 +1,5 @@
 import hashlib
 import json
-import math
 import random
 import zipfile
 from collections import Counter, defaultdict
@@ -11,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 from solar_ml.constants import ARCHIVE_NAME, CLASSES, HEIGHT, SEED, SOURCE_URL, WIDTH
-from solar_ml.images import decode_pixels, perceptual_hash
+from solar_ml.images import decode_pixels
 
 
 @dataclass
@@ -20,8 +19,6 @@ class Record:
     path: str
     label: str
     sha256: str
-    perceptual_hash: str
-    quantized_hash: str
     split: str = ""
 
 
@@ -40,6 +37,7 @@ def inspect_archive(archive: Path) -> tuple[dict, dict]:
             raise ValueError("Metadata must be an object")
         counts = Counter()
         records = []
+        arrays = []
         missing = []
         dimensions = Counter()
         formats = Counter()
@@ -70,16 +68,13 @@ def inspect_archive(archive: Path) -> tuple[dict, dict]:
                 formats[str(image.format)] += 1
                 modes[image.mode] += 1
             pixels = decode_pixels(data)
+            arrays.append(pixels)
             records.append(
                 Record(
                     image_id=str(image_id),
                     path=full_path,
                     label=label,
                     sha256=hashlib.sha256(pixels.tobytes()).hexdigest(),
-                    perceptual_hash=f"{perceptual_hash(pixels):016x}",
-                    quantized_hash=hashlib.sha256(
-                        np.floor(pixels * 15).astype(np.uint8).tobytes()
-                    ).hexdigest(),
                 )
             )
         if missing:
@@ -98,108 +93,182 @@ def inspect_archive(archive: Path) -> tuple[dict, dict]:
             "observed_modes": dict(modes),
             "selected_image_count": len(records),
         }
-        return info, {"records": records, "metadata": metadata}
+        pixels = np.stack(arrays) if arrays else np.zeros((0, WIDTH * HEIGHT), dtype=np.float32)
+        return info, {"records": records, "metadata": metadata, "pixels": pixels}
 
 
-def make_manifest(records: list[Record], per_class: int = 400, seed: int = SEED) -> dict:
+DEDUP_THRESHOLD_RMS = 0.02
+SPLITS = ("train", "validation", "test")
+
+
+def rms_distances(candidate: np.ndarray, pool: np.ndarray) -> np.ndarray:
+    """Root-mean-square pixel distance between one image and each image of a pool."""
+    if len(pool) == 0:
+        return np.zeros(0)
+    difference = pool.astype(np.float64) - candidate.astype(np.float64)
+    return np.sqrt(np.mean(difference * difference, axis=1))
+
+
+def min_cross_split_rms(pixels: np.ndarray, splits: list[str]) -> float:
+    """Smallest RMS distance between two selected images that belong to different splits."""
+    values = pixels.astype(np.float64)
+    norms = (values * values).sum(axis=1)
+    labels = np.asarray(splits)
+    best = np.inf
+    for split in SPLITS:
+        left = values[labels == split]
+        right = values[labels != split]
+        if len(left) == 0 or len(right) == 0:
+            continue
+        squared = (
+            norms[labels == split][:, None] + norms[labels != split][None] - 2 * left @ right.T
+        )
+        best = min(best, float(np.sqrt(max(squared.min(), 0.0) / values.shape[1])))
+    return best
+
+
+def make_manifest(
+    records: list[Record],
+    pixels: np.ndarray,
+    old_manifest_ids: set[str],
+    train_per_class: int = 1000,
+    validation_per_class: int = 100,
+    test_per_class: int = 150,
+    threshold: float = DEDUP_THRESHOLD_RMS,
+    seed: int = SEED,
+) -> dict:
+    """Balanced split with exact and pixel-RMS near-duplicate removal across all splits.
+
+    Test images are drawn first and only from images absent from the previous manifest.
+    Every accepted image must be farther than ``threshold`` (RMS on [0, 1] grayscale) from
+    every image accepted before it, regardless of class or split.
+    """
+    if len(records) != len(pixels):
+        raise ValueError("records and pixels must be aligned")
     rng = random.Random(seed)
     by_hash = defaultdict(list)
-    for record in records:
-        by_hash[record.sha256].append(record)
-    conflicting = [group for group in by_hash.values() if len({r.label for r in group}) > 1]
+    for index, record in enumerate(records):
+        by_hash[record.sha256].append(index)
+    conflicting = [
+        group for group in by_hash.values() if len({records[i].label for i in group}) > 1
+    ]
     if conflicting:
         raise ValueError(f"{len(conflicting)} identical images have conflicting labels")
-    unique = [sorted(group, key=lambda r: r.image_id)[0] for group in by_hash.values()]
-    selected = []
-    selected_hashes = []
-    rejected_near_duplicates = Counter()
-    priority = ("Diode", "Cell-Multi", "Cell", "No-Anomaly")
-    for label in priority:
-        candidates = sorted((r for r in unique if r.label == label), key=lambda r: r.image_id)
-        if len(candidates) < per_class:
-            raise ValueError(f"Class {label} has only {len(candidates)} unique images")
-        rng.shuffle(candidates)
-        chosen = 0
-        for record in candidates:
-            candidate_hash = int(record.perceptual_hash, 16)
-            if any((candidate_hash ^ prior).bit_count() <= 2 for prior in selected_hashes):
-                rejected_near_duplicates[label] += 1
-                continue
-            selected.append(record)
-            selected_hashes.append(candidate_hash)
-            chosen += 1
-            if chosen == per_class:
-                break
-        if chosen < per_class:
-            raise ValueError(
-                f"Cannot select {per_class} dHash-separated images for {label}; found {chosen}"
-            )
-    groups = defaultdict(list)
-    for record in selected:
-        groups[record.quantized_hash].append(record)
-    grouped = list(groups.values())
-    rng.shuffle(grouped)
-    desired = {
-        label: {
-            "train": round(per_class * 0.70),
-            "validation": round(per_class * 0.15),
-            "test": per_class - round(per_class * 0.70) - round(per_class * 0.15),
-        }
-        for label in CLASSES
-    }
-    current = {label: {split: 0 for split in ("train", "validation", "test")} for label in CLASSES}
-    for group in grouped:
-        group_counts = Counter(record.label for record in group)
-        split = min(
-            ("train", "validation", "test"),
-            key=lambda candidate: (
-                sum(
-                    (current[label][candidate] + count - desired[label][candidate]) ** 2
-                    - (current[label][candidate] - desired[label][candidate]) ** 2
-                    for label, count in group_counts.items()
-                ),
-                -sum(current[label][candidate] == 0 for label in group_counts),
-            ),
-        )
-        for record in group:
-            record.split = split
-            current[record.label][split] += 1
-    tolerance = max(2, math.ceil(per_class * 0.05))
-    for label in CLASSES:
-        for split in ("train", "validation", "test"):
-            observed = current[label][split]
-            if observed == 0 or abs(observed - desired[label][split]) > tolerance:
+    unique = [min(group, key=lambda i: records[i].image_id) for group in by_hash.values()]
+    unique.sort(key=lambda i: records[i].image_id)
+    capacity = len(CLASSES) * (train_per_class + validation_per_class + test_per_class)
+    buffer = np.empty((capacity, pixels.shape[1]), dtype=np.float64)
+    buffer_norms = np.empty(capacity, dtype=np.float64)
+    count = 0
+    selected: list[tuple[int, str]] = []
+    rejected = {stage: Counter() for stage in ("test", "train_validation")}
+    rejected_cross_class = Counter()
+    labels_of_selected: list[str] = []
+
+    def accept(index: int, stage: str) -> bool:
+        nonlocal count
+        if count:
+            candidate = pixels[index].astype(np.float64)
+            squared = buffer_norms[:count] + candidate @ candidate - 2 * buffer[:count] @ candidate
+            distances = np.sqrt(np.maximum(squared, 0.0) / len(candidate))
+            close = distances <= threshold
+            if close.any():
+                label = records[index].label
+                rejected[stage][label] += 1
+                if any(labels_of_selected[j] != label for j in np.flatnonzero(close)):
+                    rejected_cross_class[label] += 1
+                return False
+        buffer[count] = pixels[index]
+        buffer_norms[count] = buffer[count] @ buffer[count]
+        count += 1
+        labels_of_selected.append(records[index].label)
+        return True
+
+    stages = (
+        ("test", test_per_class, True),
+        ("train_validation", train_per_class + validation_per_class, False),
+    )
+    taken = set()
+    for stage, quota, fresh_only in stages:
+        for label in CLASSES:
+            candidates = [
+                i
+                for i in unique
+                if records[i].label == label
+                and i not in taken
+                and not (fresh_only and records[i].image_id in old_manifest_ids)
+            ]
+            rng.shuffle(candidates)
+            chosen = []
+            for index in candidates:
+                if accept(index, stage):
+                    chosen.append(index)
+                    taken.add(index)
+                    if len(chosen) == quota:
+                        break
+            if len(chosen) < quota:
                 raise ValueError(
-                    f"Quantized-image grouping prevents a stratified split for {label}/{split}: "
-                    f"observed {observed}, desired {desired[label][split]}"
+                    f"Cannot select {quota} separated images for {label}/{stage}; "
+                    f"found {len(chosen)}"
                 )
-    near_pair_count = 0
-    near_cross_split_count = 0
-    hashes = [(int(record.perceptual_hash, 16), record.split) for record in selected]
-    for left in range(len(hashes)):
-        left_hash, left_split = hashes[left]
-        for right_hash, right_split in hashes[left + 1 :]:
-            if (left_hash ^ right_hash).bit_count() <= 2:
-                near_pair_count += 1
-                near_cross_split_count += left_split != right_split
-    selected.sort(key=lambda r: (CLASSES.index(r.label), r.image_id))
+            if stage == "test":
+                selected.extend((index, "test") for index in chosen)
+            else:
+                selected.extend((index, "validation") for index in chosen[:validation_per_class])
+                selected.extend((index, "train") for index in chosen[validation_per_class:])
+    items = []
+    for index, split in selected:
+        item = asdict(records[index])
+        item["split"] = split
+        item["in_old_manifest"] = records[index].image_id in old_manifest_ids
+        items.append(item)
+    order = sorted(
+        range(len(items)), key=lambda k: (CLASSES.index(items[k]["label"]), items[k]["image_id"])
+    )
+    items = [items[k] for k in order]
+    chosen_pixels = pixels[[selected[k][0] for k in order]]
+    counts = {label: {split: 0 for split in SPLITS} for label in CLASSES}
+    old_by_split = {split: 0 for split in SPLITS}
+    for item in items:
+        counts[item["label"]][item["split"]] += 1
+        old_by_split[item["split"]] += item["in_old_manifest"]
+    available = Counter(records[i].label for i in unique)
     return {
         "seed": seed,
-        "per_class": per_class,
-        "selection_priority": list(priority),
-        "selection_method": "greedy_global_dhash_hamming_gt_2",
-        "rejected_near_duplicates_by_class": dict(rejected_near_duplicates),
         "classes": list(CLASSES),
         "width": WIDTH,
         "height": HEIGHT,
+        "selection_method": "greedy_global_pixel_rms_dedup",
+        "dedup": {
+            "metric": "rms_pixel_distance_on_[0,1]_bt601_luma",
+            "threshold_rms": threshold,
+            "duplicate_if": "rms <= threshold",
+            "scope": "all selected images, across classes and splits",
+            "order": "test (fresh images only) first, then train+validation; classes in CLASSES "
+            "order; candidates shuffled with random.Random(seed)",
+        },
         "exact_duplicates_removed_before_sampling": len(records) - len(unique),
-        "dhash_pairs_hamming_le_2": near_pair_count,
-        "dhash_cross_split_pairs_hamming_le_2": near_cross_split_count,
-        "quantized_groups": len(grouped),
-        "quantized_duplicate_images": len(selected) - len(grouped),
-        "largest_quantized_group": max(map(len, grouped)),
-        "split_counts_by_class": current,
-        "records": [asdict(record) for record in selected],
+        "unique_images_by_class": {label: available[label] for label in CLASSES},
+        "rejected_near_duplicates_by_stage_and_class": {
+            stage: {label: counter[label] for label in CLASSES}
+            for stage, counter in rejected.items()
+        },
+        "rejected_near_duplicates_of_other_class": {
+            label: rejected_cross_class[label] for label in CLASSES
+        },
+        "requested_per_class": {
+            "train": train_per_class,
+            "validation": validation_per_class,
+            "test": test_per_class,
+        },
+        "split_counts_by_class": counts,
+        "split_totals": {split: sum(counts[c][split] for c in CLASSES) for split in SPLITS},
+        "old_manifest_excluded_from_test": True,
+        "old_manifest_images_by_split": old_by_split,
+        "min_cross_split_rms": min_cross_split_rms(
+            chosen_pixels, [item["split"] for item in items]
+        ),
+        "records": items,
     }
 
 

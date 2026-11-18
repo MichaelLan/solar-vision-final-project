@@ -26,10 +26,14 @@ for _ in range(100):
     infer()
     samples.append((time.perf_counter() - start) * 1000)
 _, peak = tracemalloc.get_traced_memory()
-print(json.dumps({
-    "artifact_bytes": weights_path.stat().st_size,
-    "median_ms": statistics.median(samples),
-    "p95_ms": sorted(samples)[94],
-    "python_peak_allocated_bytes": peak,
-    "scope": "CPython only; not Cloudflare Workers",
-}))
+print(
+    json.dumps(
+        {
+            "artifact_bytes": weights_path.stat().st_size,
+            "median_ms": statistics.median(samples),
+            "p95_ms": sorted(samples)[94],
+            "python_peak_allocated_bytes": peak,
+            "scope": "CPython only; not Cloudflare Workers",
+        }
+    )
+)

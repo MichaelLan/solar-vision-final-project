@@ -33,4 +33,7 @@ def predict(data: Input):
     shift = max(output)
     unscaled = [math.exp(x - shift) for x in output]
     total = sum(unscaled)
-    return {"probabilities": [x / total for x in unscaled], "inference_ms": (perf_counter() - start) * 1000}
+    return {
+        "probabilities": [x / total for x in unscaled],
+        "inference_ms": (perf_counter() - start) * 1000,
+    }

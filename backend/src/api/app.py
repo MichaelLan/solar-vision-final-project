@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from core.container import get_classifier, get_service
-from infra.classifier import LABELS, ModelUnavailable
+from domain.model import CHANNELS, HEIGHT, LABELS, PIXEL_ENCODING, PIXELS, WIDTH, ModelUnavailable
 from services.classification import (
     ClassificationService,
     InvalidImageTensor,
@@ -15,7 +15,7 @@ from services.classification import (
 
 
 class PredictRequest(BaseModel):
-    pixels: list[float] = Field(min_length=960, max_length=960)
+    pixels: list[float] = Field(min_length=PIXELS, max_length=PIXELS)
     width: int
     height: int
 
@@ -50,7 +50,9 @@ class BodyLimitMiddleware:
             chunk = message.get("body", b"")
             total += len(chunk)
             if total > self.max_bytes:
-                response = JSONResponse(status_code=413, content={"detail": "Request body too large"})
+                response = JSONResponse(
+                    status_code=413, content={"detail": "Request body too large"}
+                )
                 return await response(scope, receive, send)
             chunks.append(chunk)
             if not message.get("more_body", False):
@@ -81,25 +83,32 @@ async def health():
     try:
         get_classifier()
         return {"status": "ok", "model_ready": True}
-    except (ModelUnavailable, ValueError):
+    except ModelUnavailable:
         return {"status": "degraded", "model_ready": False}
 
 
 @app.get("/api/model/info")
 async def model_info():
-    try:
-        classifier = get_classifier()
-    except (ModelUnavailable, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    classifier = get_classifier()
     return {
         "version": classifier.version,
+        "architecture": classifier.architecture,
+        "sha256": classifier.sha256,
         "classes": [{"class": name, "label": LABELS[name]} for name in classifier.classes],
-        "input": {"width": 24, "height": 40, "channels": 1, "normalization": "rounded_bt601_luma_255"},
+        "input": {
+            "width": WIDTH,
+            "height": HEIGHT,
+            "channels": CHANNELS,
+            "normalization": PIXEL_ENCODING,
+            "server_normalization": classifier.normalization,
+        },
     }
 
 
 @app.post("/api/predict")
-async def predict(request: PredictRequest, service: Annotated[ClassificationService, Depends(get_service)]):
+async def predict(
+    request: PredictRequest, service: Annotated[ClassificationService, Depends(get_service)]
+):
     try:
         result = service.classify(request.pixels, request.width, request.height)
     except InvalidImageTensor as exc:

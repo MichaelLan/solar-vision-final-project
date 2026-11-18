@@ -25,18 +25,46 @@ export function validateImage(file: File): string | null {
   return null
 }
 
+export function dimensionError(width: number, height: number): string | null {
+  if (width === IMAGE_WIDTH && height === IMAGE_HEIGHT) return null
+  return `Tamaño no admitido: mide ${width} × ${height} px y debe medir ${IMAGE_WIDTH} × ${IMAGE_HEIGHT} px, como las imágenes de entrenamiento.`
+}
+
+async function decodeImage(url: string): Promise<HTMLImageElement> {
+  const image = new Image()
+  image.src = url
+  try {
+    await image.decode()
+  } catch {
+    throw new Error('No se pudo leer la imagen; el archivo puede estar dañado.')
+  }
+  return image
+}
+
+/** Full client-side check (type, size and pixel dimensions) used when files are added. */
+export async function checkImage(file: File): Promise<string | null> {
+  const basicError = validateImage(file)
+  if (basicError) return basicError
+  const url = URL.createObjectURL(file)
+  try {
+    const image = await decodeImage(url)
+    return dimensionError(image.naturalWidth, image.naturalHeight)
+  } catch (error) {
+    return error instanceof Error ? error.message : 'No se pudo leer la imagen.'
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
 export async function imageToPixels(file: File): Promise<number[]> {
   const validationError = validateImage(file)
   if (validationError) throw new Error(validationError)
 
   const url = URL.createObjectURL(file)
   try {
-    const image = new Image()
-    image.src = url
-    await image.decode()
-    if (image.naturalWidth !== IMAGE_WIDTH || image.naturalHeight !== IMAGE_HEIGHT) {
-      throw new Error(`La imagen debe medir ${IMAGE_WIDTH} × ${IMAGE_HEIGHT} píxeles, como las muestras del dataset.`)
-    }
+    const image = await decodeImage(url)
+    const sizeError = dimensionError(image.naturalWidth, image.naturalHeight)
+    if (sizeError) throw new Error(sizeError)
     const canvas = document.createElement('canvas')
     canvas.width = IMAGE_WIDTH
     canvas.height = IMAGE_HEIGHT

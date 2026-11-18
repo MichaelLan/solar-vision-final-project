@@ -1,58 +1,61 @@
 # Solar Vision
 
-Clasificación académica de cuatro patrones en imágenes térmicas de módulos fotovoltaicos. El repositorio contiene preparación y evaluación de datos, API FastAPI diseñada para Cloudflare Workers, interfaz Vue 3 y un informe IEEE en Typst. La herramienta apoya una primera revisión visual; no emite diagnósticos eléctricos.
+Clasificación académica de cuatro patrones en imágenes térmicas de módulos fotovoltaicos (No-Anomaly, Cell, Cell-Multi y Diode) con el conjunto InfraredSolarModules de Raptor Maps. El repositorio contiene la preparación de datos y el entrenamiento (`ml/`), una API FastAPI para Cloudflare Workers (`backend/`), una interfaz Vue 3 (`frontend/`) y un informe IEEE en Typst (`report/`). La herramienta apoya una primera revisión visual; no emite diagnósticos eléctricos.
 
-## Estado verificado
+## Estado
 
-Al 17 de noviembre de 2026, el ZIP original está disponible en `dataset/`, se verificaron sus 20.000 metadatos y se entrenó y evaluó el modelo final. El artefacto de pesos está en `artifacts/model.json` y se empaquetó para el backend. La API ASGI local respondió 200 a una imagen real del conjunto de prueba. Se instaló pywrangler 1.17.9 desde caché y `pywrangler deploy --dry-run` generó un bundle real de 9,666 MiB. **La entrega aún es parcial:** `pywrangler dev` no pudo arrancar por la restricción `uv_interface_addresses` del sandbox, y no hay despliegue público verificado. Existen `backend/uv.lock` y `backend/pylock.toml`; faltan `ml/uv.lock` y `frontend/pnpm-lock.yaml`, que GitHub Actions exige antes de desplegar. El PDF presenta métricas reales y declara los límites del despliegue. Véase [la prueba de viabilidad](backend/feasibility/README.md) y la [guía de CI y Cloudflare](docs/ci-cloudflare.md).
+- **Modelo actual (2.0.0):** CNN compacta (`cnn_w16`, 23 556 parámetros), seleccionada por F1 macro medio de validación sobre tres semillas, según un protocolo registrado antes de entrenar (`artifacts/metrics.json`, clave `protocol`).
+- **Evaluación:** conjunto de prueba nuevo de 600 imágenes (150 por clase), sin imágenes de la versión anterior, evaluado una sola vez.
+- **Despliegue:** la URL pública [solar-vision.michaellan-eng.workers.dev](https://solar-vision.michaellan-eng.workers.dev/) sirve el modelo 2.0.0 desde el 18 de noviembre de 2026. Se verificó que `/api/model/info` devuelve el mismo SHA-256 que `artifacts/model.json` y que `POST /api/predict` con el tensor de referencia (imagen 3578) reproduce `artifacts/reference_prediction.json` (Cell-Multi 0,678). La versión anterior (1.0.0, regresión logística) ya no está publicada.
 
-Las pruebas del backend (8/8) y del pipeline ML (6/6) pasaron en el entorno local; la compilación de Typst también pasó. Una prueba HTTP ASGI con un JPEG real devolvió 200 y probabilidades coincidentes con la referencia ML. Entre las imágenes demostrativas hay un error observable: Cell-Multi 3557 se clasificó como Cell. La latencia del prototipo corresponde solo a CPython con pesos representativos, no a Cloudflare. El build y las pruebas del frontend requieren verificación tras instalar dependencias con pnpm.
+### Resultados en la prueba nueva
+
+| Modelo | Exactitud | F1 macro | AUC macro (OvR) | Sensibilidad anomalía | Especificidad |
+|---|---|---|---|---|---|
+| CNN w16 (desplegada) | 0,757 [0,720; 0,790] | 0,748 [0,713; 0,780] | 0,929 [0,914; 0,941] | 0,896 | 0,913 |
+| Regresión logística (línea base) | 0,582 | 0,575 | 0,818 | 0,849 | 0,587 |
+
+Los intervalos son bootstrap percentiles del 95 % (1000 remuestreos). F1 por clase de la CNN: Diode 0,945, No-Anomaly 0,820, Cell 0,627 y Cell-Multi 0,601. La confusión principal es Cell ↔ Cell-Multi. El experimento anterior (`artifacts/historical/`, exactitud 0,5625) usaba otra partición y un conjunto de prueba ya consultado, por lo que no es comparable. Detalles en el [informe PDF](report/informe.pdf) y en [ml/README.md](ml/README.md).
 
 ## Arquitectura
 
 ```text
-dataset/2020-02-14_InfraredSolarModules.zip → ml/ (preparación, split, entrenamiento, evaluación)
-                              ↓ artifacts/model.json, metrics.json y figuras
-imagen → navegador Vue (decodificación, luminancia 24×40) → POST /api/predict
+dataset/2020-02-14_InfraredSolarModules.zip → ml/ (partición, entrenamiento, evaluación)
+                         ↓ artifacts/model.json, metrics.json, manifest.json, figures/
+imagen → navegador Vue (valida, luminancia 24×40) → POST /api/predict (960 valores en [0,1])
                                                        ↓
-                         Python Worker / FastAPI → pesos empaquetados → clase y probabilidades
+     Python Worker / FastAPI → estandarización por imagen → CNN en numpy → clase y probabilidades
 ```
 
-El navegador acepta PNG, JPEG o WebP de **24 píxeles de ancho por 40 de alto**, sin redimensionar. Calcula 960 valores en orden fila: `floor(0.299 R + 0.587 G + 0.114 B + 0.5) / 255`. La API valida dimensiones, longitud, rango finito y tamaño de solicitud. Las capas de aplicación dependen de un contrato de clasificación; la implementación de pesos vive en infraestructura. No se almacenan imágenes subidas. El preprocesamiento del navegador y Pillow deben compararse con JPEG reales antes del despliegue.
+El navegador acepta PNG, JPEG o WebP de **24 × 40 píxeles** (sin redimensionar), hasta 5 MB por archivo y hasta 20 por lote. Calcula 960 valores por filas: `floor(0.299 R + 0.587 G + 0.114 B + 0.5) / 255`. El servidor valida el vector, aplica `(x − media) / (std + 1e-6)` por imagen y ejecuta el paso hacia adelante de la CNN implementado en numpy a partir de `artifacts/model.json` (PyTorch no está disponible en Workers). En las 600 imágenes de prueba, la diferencia máxima de probabilidad frente a PyTorch es 3,2 × 10⁻⁷ y las predicciones coinciden al 100 %. No se almacenan imágenes.
+
+Rutas: `GET /api/health`, `GET /api/model/info` (versión, arquitectura, SHA-256 y contrato de entrada) y `POST /api/predict` con `{"pixels": [960 valores], "width": 24, "height": 40}`.
 
 ## Requisitos
 
-- Python 3.12 para `ml/` y Python 3.14 para `backend/` (instalables mediante `uv`).
-- `uv`, Node.js, pnpm y Typst reciente con `@preview/charged-ieee:0.1.4`.
-- Conexión a los registros de paquetes y Cloudflare para instalar y desplegar.
-- ZIP original `2020-02-14_InfraredSolarModules.zip` de [Raptor Maps](https://github.com/RaptorMaps/InfraredSolarModules). La copia local está en `dataset/` y no se versiona.
+- `uv`; Python 3.12 para `ml/` (incluye PyTorch CPU) y Python 3.14 para `backend/`.
+- Node.js 24 y pnpm 12 para `frontend/`.
+- Typst reciente con `@preview/charged-ieee:0.1.4` para el informe.
+- ZIP original `2020-02-14_InfraredSolarModules.zip` de [Raptor Maps](https://github.com/RaptorMaps/InfraredSolarModules) (licencia MIT) en `dataset/`; no se versiona.
 
 Los lockfiles de `backend/`, `ml/` y `frontend/` están versionados. El lockfile de pnpm 12 contiene dos documentos YAML por diseño; no deben separarse.
 
 ## Preparar, entrenar y evaluar
 
-Desde la raíz `solar-vision/`:
-
 ```bash
 cd ml
-UV_PYTHON=3.12 uv sync --dev
+uv sync --python 3.12 --locked
 PYTHONPATH=src uv run --no-sync python -m solar_ml.cli --archive ../dataset/2020-02-14_InfraredSolarModules.zip
 ```
 
-La alternativa `--download` descarga el archivo del repositorio si GitHub está accesible. El pipeline verifica ZIP y metadatos y selecciona 400 imágenes por clase con semilla 42. La meta inicial de 1.000 se redujo para excluir globalmente parejas con dHash de distancia ≤ 2; el manifiesto final no contiene esas parejas. Se eliminaron dos duplicados exactos antes del muestreo. Se asignaron 280/60/60 imágenes por clase a entrenamiento/validación/prueba. Se comparó regresión logística con una MLP de 32 unidades; se eligió por F1 macro de validación y se evaluó una vez en prueba. El ZIP contiene 20.000 registros; las cuatro categorías elegidas tienen 10.000, 1.877, 1.288 y 1.499, en el orden indicado. [Detalles del pipeline](ml/README.md).
-
-### Resultado medido
-
-La regresión logística fue seleccionada (F1 macro de validación 0,539 frente a 0,427 de la MLP). En las 240 imágenes de prueba obtuvo accuracy **0,558**, precisión macro **0,564**, recall macro **0,558**, F1 macro **0,561** y AUC macro uno contra el resto **0,797**. Los valores por clase, matriz de confusión y curvas ROC están en `artifacts/metrics.json` y en el [informe PDF](report/informe.pdf). Ambos candidatos alcanzaron sus límites de iteraciones (300 y 60) sin convergencia declarada; la comparación no debe interpretarse como una búsqueda exhaustiva de hiperparámetros.
+El pipeline usa semilla 42: elimina duplicados exactos, aplica una deduplicación global por distancia RMS de píxeles (≤ 0,02) entre clases y particiones, selecciona 1000/100/150 imágenes por clase (entrenamiento/validación/prueba), entrena la regresión logística y las CNN w8 y w16 con las semillas 42, 43 y 44, selecciona según el protocolo y evalúa la prueba una sola vez. Escribe los artefactos en `artifacts/` y las figuras en `artifacts/figures/`. Ver [ml/README.md](ml/README.md).
 
 ## Ejecutar API y frontend localmente
 
-Después de entrenar, desde `solar-vision/`:
-
 ```bash
-python3 backend/scripts/package_model.py
+python3 backend/scripts/package_model.py   # incrusta artifacts/model.json en el Worker
 cd backend
-UV_PYTHON=3.14 uv sync --locked --dev
+uv sync --python 3.14 --locked --dev
 uv run --no-sync uvicorn api.app:app --app-dir src --host 127.0.0.1 --port 8000
 ```
 
@@ -64,43 +67,35 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm dev
 ```
 
-`--ignore-scripts` evita los scripts de instalación de las dependencias. `pnpm dev`, `pnpm typecheck`, `pnpm test` y `pnpm build` sí ejecutan código JavaScript; ejecútelos únicamente en un entorno autorizado, como el CI aislado. El build puede requerir que `esbuild` complete su instalación; en esta sesión no se aprobaron ni ejecutaron sus scripts.
+Vite redirige `/api` a `localhost:8000`. Compruebe `http://127.0.0.1:8000/api/health` y `/api/model/info` (debe indicar la versión 2.0.0) antes de enviar imágenes. Para probar, use las imágenes de `ml/demo/`, tomadas del conjunto de prueba (procedencia en `ml/demo/provenance.json`).
 
-Vite usa `/api` hacia `localhost:8000`. Compruebe `http://127.0.0.1:8000/api/health` y `/api/model/info` antes de enviar imágenes. La API recibe JSON como `{"pixels":[960 valores],"width":24,"height":40}`; no recibe el archivo original. `POST /api/predict` devuelve clase, confianza y probabilidades reales. Se pueden seleccionar hasta 20 imágenes por lote en la interfaz.
+`--ignore-scripts` evita los scripts de instalación de las dependencias. `pnpm dev`, `pnpm test` y `pnpm build` sí ejecutan código JavaScript; ejecútelos solo en un entorno autorizado, como el CI aislado.
 
-## Pruebas y PDF
+## Pruebas e informe
 
 ```bash
-cd ml
-PYTHONPATH=src uv run --no-sync pytest -q
-uv run --no-sync ruff check src tests
-cd ../backend
-PYTHONPATH=src uv run --no-sync python -m unittest discover -s tests -v
-uv run --no-sync ruff check src tests
-cd ../frontend
-pnpm typecheck
-pnpm test
-pnpm build
+cd ml && PYTHONPATH=src uv run --no-sync pytest -q && uv run --no-sync ruff check src tests
+cd ../backend && uv run --no-sync pytest -q tests && uv run --no-sync ruff check src tests
+cd ../frontend && pnpm test && pnpm build
 cd ..
 python3 report/build_report.py
 typst compile --root . report/main.typ report/informe.pdf
 ```
 
-`report/build_report.py` incorpora únicamente resultados de `artifacts/metrics.json` y exige las figuras generadas por el experimento. Sin ese archivo, el PDF declara la evaluación pendiente. Revise en el PDF los autores marcados como `[NOMBRE AUTOR ...]` antes de entregar. El guion de [video demostrativo](docs/video.md) utiliza resultados reales y dura menos de diez minutos.
+`report/build_report.py` usa solo la biblioteca estándar: genera `report/results.typ` con todas las cifras del informe a partir de `artifacts/*.json` y falla si alguna afirmación cualitativa del texto deja de cumplirse. Con `--figures` (requiere matplotlib y Pillow, por ejemplo `ml/.venv/bin/python report/build_report.py --figures`) también regenera las figuras de `report/figures/` desde las métricas y el ZIP. La captura de la interfaz (`report/figures/app_result.png`) procede de la aplicación pública con el modelo 2.0.0, recortada para que sea legible a una columna. El guion del [video demostrativo](docs/video.md) dura menos de diez minutos.
 
 ## Cloudflare Workers
 
-La configuración [Wrangler](backend/wrangler.jsonc) empaqueta la API Python y sirve `frontend/dist` mediante Workers Static Assets. Tras entrenar, empaquetar el modelo y construir el frontend:
+La configuración [Wrangler](backend/wrangler.jsonc) empaqueta la API Python (FastAPI y numpy) y sirve `frontend/dist` mediante Workers Static Assets.
 
 ```bash
 cd backend
-UV_PYTHON=3.14 uv sync --locked --dev
 uv run --no-sync pywrangler deploy --dry-run
 uv run --no-sync pywrangler dev
 ```
 
-El dry run local empaquetó 9,666 MiB con pywrangler 1.17.9; esto comprueba el bundle, no la ejecución en Workers. En esta sesión `pywrangler dev` se detuvo al consultar `uv_interface_addresses` por restricciones del sandbox. En un entorno sin esa restricción, pruebe `/api/health`, `/api/model/info`, una predicción de una imagen real y un lote desde el navegador local de Workers. La publicación se prepara mediante [GitHub Actions](docs/ci-cloudflare.md): el workflow verifica ML, backend, frontend e informe y, en `main`, despliega y comprueba la URL pública. No se conoce el estado de los secretos de Cloudflare en GitHub ni se ha verificado la ejecución exitosa del workflow; **no hay URL pública verificada**. La viabilidad de FastAPI y Static Assets se apoya en [documentación oficial de Cloudflare](https://developers.cloudflare.com/workers/languages/python/packages/fastapi/). No guarde tokens ni credenciales en Git.
+La publicación se hace con [GitHub Actions](docs/ci-cloudflare.md): el workflow verifica ML, backend, frontend e informe y, en `main`, despliega y comprueba la URL pública. Tras cada despliegue, verifique que `/api/model/info` devuelva la versión y el SHA-256 de `artifacts/model.json`. No guarde tokens ni credenciales en Git.
 
 ## Límites
 
-La selección equilibrada de cuatro clases no representa las frecuencias reales de una planta. El dataset no provee identificadores de instalación; aunque el manifiesto final excluye parejas cercanas según dHash, la evaluación no garantiza independencia por sitio. El clasificador no localiza anomalías ni estima temperatura. La paridad de preprocesamiento JPEG y la inferencia en el runtime de Cloudflare requieren verificación adicional.
+La partición equilibrada no representa la frecuencia real de las clases (No-Anomaly es el 50 % del conjunto completo y el 68 % de las cuatro clases elegidas). El conjunto no tiene identificadores de planta, por lo que la evaluación no mide la generalización a otras instalaciones. A 24 × 40 píxeles es difícil distinguir una celda caliente de varias. Solo se modelan cuatro de las doce clases, y las imágenes de otras categorías se asignarán a una de ellas. Las probabilidades no están calibradas. El clasificador no localiza anomalías ni estima temperatura.
