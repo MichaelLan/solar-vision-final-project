@@ -222,6 +222,15 @@ def plot_results(results: dict, figures_dir: Path) -> None:
     plt.close(fig)
 
 
+def _log(name: str, run: str, metrics: dict) -> None:
+    print(
+        f"[validation] {name} {run}: F1 macro {metrics['f1_macro']:.4f}, "
+        f"accuracy {metrics['accuracy']:.4f}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _mean_sd(runs: list[dict]) -> tuple[dict, dict]:
     keys = runs[0].keys()
     mean = {k: float(np.mean([r[k] for r in runs])) for k in keys}
@@ -275,6 +284,7 @@ def train(
         warnings.simplefilter("always", ConvergenceWarning)
         baseline = LogisticRegression(C=1, max_iter=3000, random_state=SEED).fit(train_x, train_y)
     baseline_val = summary_metrics(valid_y, baseline.predict_proba(valid_x))
+    _log("logistic_regression", "deterministic", baseline_val)
     results["models"]["logistic_regression"] = {
         "parameters": int(baseline.coef_.size + baseline.intercept_.size),
         "training_seconds": time.perf_counter() - start,
@@ -293,6 +303,7 @@ def train(
             model, seconds = cnn.train_cnn(train_x, train_y, width, seed, epochs=epochs)
             runs[str(seed)] = summary_metrics(valid_y, cnn.predict_proba(model, valid_x))
             times[str(seed)] = seconds
+            _log(name, f"seed={seed}", runs[str(seed)])
             if seed == DEPLOY_SEED or (DEPLOY_SEED not in seeds and seed == seeds[0]):
                 deploy_models[name] = model
         mean, sd = _mean_sd(list(runs.values()))
@@ -305,6 +316,15 @@ def train(
         }
 
     selected = select_architecture(results["models"])
+    for name, entry in results["models"].items():
+        mean, sd = entry["validation_mean"], entry["validation_sd"]
+        print(
+            f"[summary] {name}: val F1 macro {mean['f1_macro']:.4f} +/- {sd['f1_macro']:.4f}, "
+            f"accuracy {mean['accuracy']:.4f} +/- {sd['accuracy']:.4f}",
+            file=sys.stderr,
+            flush=True,
+        )
+    print(f"[selection] selected model: {selected}", file=sys.stderr, flush=True)
     model = deploy_models[selected]
     probabilities = cnn.predict_proba(model, test_x)
     test = full_metrics(test_y, probabilities, test_records)

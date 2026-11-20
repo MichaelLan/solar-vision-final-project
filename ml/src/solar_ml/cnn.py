@@ -1,5 +1,6 @@
 """Small CNN for 24x40 thermal images (training only; inference is exported to JSON)."""
 
+import sys
 import time
 
 import numpy as np
@@ -81,8 +82,9 @@ def train_cnn(
         optimizer, max_lr=3e-3, total_steps=epochs * steps_per_epoch
     )
     start = time.perf_counter()
-    for _ in range(epochs):
+    for epoch in range(1, epochs + 1):
         model.train()
+        epoch_loss, batches = 0.0, 0
         order = torch.randperm(len(inputs), generator=generator)
         for offset in range(0, len(inputs), batch_size):
             batch = order[offset : offset + batch_size]
@@ -96,6 +98,15 @@ def train_cnn(
             loss.backward()
             optimizer.step()
             scheduler.step()
+            epoch_loss += loss.item()
+            batches += 1
+        if epoch == 1 or epoch % 10 == 0:
+            print(
+                f"  [cnn_w{width} seed={seed}] epoch {epoch:2d}/{epochs} "
+                f"train_loss={epoch_loss / batches:.4f}",
+                file=sys.stderr,
+                flush=True,
+            )
     model.eval()
     return model, time.perf_counter() - start
 
